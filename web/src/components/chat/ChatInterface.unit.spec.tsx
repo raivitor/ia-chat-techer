@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@ai-sdk/react', () => ({
@@ -63,7 +63,10 @@ const baseConversation = {
   messages: [],
 }
 
+type TestConversation = typeof baseConversation
+
 beforeEach(() => {
+  vi.clearAllMocks()
   vi.mocked(api.getConversation).mockResolvedValue(baseConversation)
   vi.mocked(api.getModels).mockResolvedValue({
     models: [{ id: 'model-a', name: 'Model A', contextWindow: 8192 }],
@@ -228,9 +231,106 @@ describe('ChatInterface', () => {
     render(<ChatInterface conversationId='conv-1' />)
 
     await waitFor(() => {
+      expect(vi.mocked(useChat)).toHaveBeenCalled()
       const chatOptions = vi.mocked(useChat).mock.calls.at(-1)?.[0] as unknown as { messages?: UIMessage[] }
       expect(chatOptions?.messages).toHaveLength(1)
       expect(chatOptions?.messages?.[0].id).toBe('u1')
+    })
+  })
+
+  it('waits for conversation history before initializing useChat', async () => {
+    let resolveConversation: ((value: TestConversation) => void) | undefined
+    vi.mocked(api.getConversation).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveConversation = resolve
+        }),
+    )
+
+    render(<ChatInterface conversationId='conv-1' />)
+
+    expect(vi.mocked(useChat)).not.toHaveBeenCalled()
+
+    resolveConversation?.({
+      ...baseConversation,
+      messages: [makeDbMessage({ id: 'u1', role: 'user', content: 'hello' })],
+    })
+
+    await waitFor(() => {
+      expect(vi.mocked(useChat)).toHaveBeenCalled()
+      const chatOptions = vi.mocked(useChat).mock.calls.at(-1)?.[0] as unknown as { messages?: UIMessage[] }
+      expect(chatOptions?.messages?.[0]?.id).toBe('u1')
+    })
+  })
+
+  it('does not seed a switched conversation with the previous conversation messages', async () => {
+    vi.mocked(api.getConversation).mockImplementation(async id => ({
+      ...baseConversation,
+      id,
+      messages: [makeDbMessage({ id: id === 'conv-1' ? 'u1' : 'u2', conversationId: id, content: id })],
+    }))
+
+    const { rerender } = render(<ChatInterface conversationId='conv-1' />)
+
+    await waitFor(() => {
+      const chatOptions = vi.mocked(useChat).mock.calls.at(-1)?.[0] as unknown as { id?: string; messages?: UIMessage[] }
+      expect(chatOptions?.id).toBe('conv-1')
+      expect(chatOptions?.messages?.[0]?.id).toBe('u1')
+    })
+
+    vi.mocked(useChat).mockClear()
+    rerender(<ChatInterface conversationId='conv-2' />)
+
+    await waitFor(() => {
+      const conv2Calls = vi.mocked(useChat).mock.calls.filter(([options]) => {
+        return (options as unknown as { id?: string }).id === 'conv-2'
+      })
+      expect(conv2Calls.length).toBeGreaterThan(0)
+      expect((conv2Calls.at(-1)?.[0] as unknown as { messages?: UIMessage[] }).messages?.[0]?.id).toBe('u2')
+    })
+
+    const conv2Calls = vi.mocked(useChat).mock.calls.filter(([options]) => {
+      return (options as unknown as { id?: string }).id === 'conv-2'
+    })
+    expect(conv2Calls).not.toContainEqual(
+      expect.arrayContaining([expect.objectContaining({ messages: [expect.objectContaining({ id: 'u1' })] })]),
+    )
+  })
+
+  it('ignores late conversation responses after switching conversationId', async () => {
+    const resolvers: Record<string, (value: TestConversation) => void> = {}
+    vi.mocked(api.getConversation).mockImplementation(
+      id =>
+        new Promise(resolve => {
+          resolvers[id] = resolve
+        }),
+    )
+
+    const { rerender } = render(<ChatInterface conversationId='conv-1' />)
+    rerender(<ChatInterface conversationId='conv-2' />)
+
+    await act(async () => {
+      resolvers['conv-1']?.({
+        ...baseConversation,
+        id: 'conv-1',
+        messages: [makeDbMessage({ id: 'u1', conversationId: 'conv-1', content: 'old' })],
+      })
+    })
+
+    expect(vi.mocked(useChat)).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolvers['conv-2']?.({
+        ...baseConversation,
+        id: 'conv-2',
+        messages: [makeDbMessage({ id: 'u2', conversationId: 'conv-2', content: 'new' })],
+      })
+    })
+
+    await waitFor(() => {
+      const chatOptions = vi.mocked(useChat).mock.calls.at(-1)?.[0] as unknown as { id?: string; messages?: UIMessage[] }
+      expect(chatOptions?.id).toBe('conv-2')
+      expect(chatOptions?.messages?.[0]?.id).toBe('u2')
     })
   })
 
@@ -244,6 +344,8 @@ describe('ChatInterface', () => {
 
     render(<ChatInterface conversationId='conv-1' />)
 
-    expect(screen.getByText(/Stream failed/)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText(/Stream failed/)).toBeInTheDocument()
+    })
   })
 })

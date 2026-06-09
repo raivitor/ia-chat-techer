@@ -52,30 +52,17 @@ export function ContextUsage({ tokensUsed, contextWindow }: ContextUsageProps) {
   )
 }
 
-export default function ChatInterface({ conversationId }: ChatInterfaceProps) {
-  const [initialMessages, setInitialMessages] = useState<UIMessage[]>([])
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [inputValue, setInputValue] = useState('')
-  const [conversation, setConversation] = useState<ConversationWithMessages | null>(null)
-  const [modelsMap, setModelsMap] = useState<Record<string, number>>({})
-  const prevStatusRef = useRef<string>('')
+interface ChatSessionProps {
+  conversationId: string
+  initialMessages: UIMessage[]
+  conversation: ConversationWithMessages | null
+  setConversation: (conversation: ConversationWithMessages) => void
+  modelsMap: Record<string, number>
+}
 
-  useEffect(() => {
-    void Promise.all([api.getConversation(conversationId), api.getModels()])
-      .then(([conv, { models }]) => {
-        const map: Record<string, number> = {}
-        models.forEach((m: AIModel) => {
-          map[m.id] = m.contextWindow
-        })
-        setModelsMap(map)
-        setConversation(conv)
-        const uiMessages = conv.messages.filter(m => m.role !== 'system').map(dbMessageToUIMessage)
-        setInitialMessages(uiMessages)
-      })
-      .catch(() => {
-        setLoadError('Failed to load conversation history.')
-      })
-  }, [conversationId])
+function ChatSession({ conversationId, initialMessages, conversation, setConversation, modelsMap }: ChatSessionProps) {
+  const [inputValue, setInputValue] = useState('')
+  const prevStatusRef = useRef<string>('')
 
   const { messages, status, error, sendMessage } = useChat({
     id: conversationId,
@@ -145,7 +132,6 @@ export default function ChatInterface({ conversationId }: ChatInterfaceProps) {
 
   return (
     <div className='chat-interface'>
-      {loadError && <div className='load-error'>{loadError}</div>}
       {error && <div className='stream-error'>Error: {error.message}</div>}
       <MessageList
         messages={messages}
@@ -166,5 +152,72 @@ export default function ChatInterface({ conversationId }: ChatInterfaceProps) {
         disabled={isActive}
       />
     </div>
+  )
+}
+
+type LoadedChatState = {
+  conversationId: string
+  messages: UIMessage[]
+} | null
+
+export default function ChatInterface({ conversationId }: ChatInterfaceProps) {
+  const [loadedChat, setLoadedChat] = useState<LoadedChatState>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [conversation, setConversation] = useState<ConversationWithMessages | null>(null)
+  const [modelsMap, setModelsMap] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    let cancelled = false
+
+    setLoadedChat(null)
+    setLoadError(null)
+
+    void Promise.all([api.getConversation(conversationId), api.getModels()])
+      .then(([conv, { models }]) => {
+        if (cancelled) return
+
+        const map: Record<string, number> = {}
+        models.forEach((m: AIModel) => {
+          map[m.id] = m.contextWindow
+        })
+        setModelsMap(map)
+        setConversation(conv)
+        setLoadedChat({
+          conversationId,
+          messages: conv.messages.filter(m => m.role !== 'system').map(dbMessageToUIMessage),
+        })
+      })
+      .catch(() => {
+        if (cancelled) return
+
+        setLoadError('Failed to load conversation history.')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId])
+
+  if (loadError) {
+    return (
+      <div className='chat-interface'>
+        <div className='load-error'>{loadError}</div>
+      </div>
+    )
+  }
+
+  if (loadedChat?.conversationId !== conversationId) {
+    return <div className='chat-interface' />
+  }
+
+  return (
+    <ChatSession
+      key={conversationId}
+      conversationId={conversationId}
+      initialMessages={loadedChat.messages}
+      conversation={conversation}
+      setConversation={setConversation}
+      modelsMap={modelsMap}
+    />
   )
 }
