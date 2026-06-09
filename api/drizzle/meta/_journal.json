@@ -29,6 +29,13 @@
       "when": 1780232850000,
       "tag": "0003_add_web_search_to_conversations",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1780251420000,
+      "tag": "0004_add_reviewed_at_to_conversations",
+      "breakpoints": true
     }
   ]
 }
